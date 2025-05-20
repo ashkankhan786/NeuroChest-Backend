@@ -6,12 +6,14 @@ import io
 import tensorflow as tf
 from keras.utils import custom_object_scope
 from tensorflow.keras.layers import Layer
-from model_downloader import download_model
 import os
+import requests
 
 app = Flask(__name__)
 CORS(app)
 
+MODEL_DIR = './cached_models'
+os.makedirs(MODEL_DIR, exist_ok=True)
 
 class Cast(Layer):
     def __init__(self, dtype, **kwargs):
@@ -36,19 +38,17 @@ model_urls = {
     'DenseNet121': 'https://huggingface.co/ashkankhan/chest-xray-models/resolve/main/model_DenseNet121.h5'
 }
 
-os.makedirs('./models', exist_ok=True)
+loaded_models={}
 
-# Load all 4 models (once at startup)
-model_paths = []
-for name, url in model_urls.items():
-    local_path = f"./models/{name}.h5"
-    download_model(url, local_path)
-    model_paths.append(local_path)
+def download_and_load_model(model_name,url):
+    path = os.path.join(MODEL_DIR, f"{model_name}.h5")
+    if not os.path.exists(path):
+        r = requests.get(url)
+        with open(path, "wb") as f:
+            f.write(r.content)
+    with custom_object_scope(custom_objects):
+        return tf.keras.models.load_model(path)
 
-models = []
-with custom_object_scope(custom_objects):
-    for path in model_paths:
-        models.append(tf.keras.models.load_model(path))
 
 
 # Define your disease labels in the same order as your output layer
@@ -74,7 +74,14 @@ def predict():
     img_array = np.expand_dims(img_array, axis=0)  # shape: (1, 224, 224, 3)
 
     # Predict with each model and collect results
-    predictions = [model.predict(img_array)[0] for model in models]
+    predictions = []
+
+    for model_name, url in model_urls.items():
+        if model_name not in loaded_models:
+            loaded_models[model_name] = download_and_load_model(model_name, url)
+        prediction = loaded_models[model_name].predict(img_array)[0]
+        predictions.append(prediction)
+    
     avg_prediction = np.mean(predictions, axis=0)
 
     # Get labels with probability > 0.5
